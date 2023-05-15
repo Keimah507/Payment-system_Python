@@ -2,15 +2,21 @@ from flask import request, jsonify
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from temporalio import workflow, activity
+
+with workflow.unsafe.imports_passed_through():
+    from workflows import DepositWorkflow, WithdrawWorkflow
 
 
 from werkzeug.security import generate_password_hash, check_password_hash
-from models.user import User, Base, app, db
+from models.user import User, app, db
 from schemas.schema import UserSchema
 
 
 engine = create_engine("sqlite:///users.db", echo=True)
-Base.metadata.create_all(engine)
+with app.app_context():
+    db.create_all()
+
 Session = sessionmaker(bind=engine)
 
 user_schema = UserSchema()
@@ -45,8 +51,9 @@ def register():
         db.session.close()
 
 
+@activity.defn
 @app.route('/deposit/<int:user_id>', methods=['POST'])
-def depositFunds(user_id):
+async def deposit_funds(user_id):
     """
     Deposits fund into wallet
     """
@@ -59,15 +66,16 @@ def depositFunds(user_id):
         return jsonify({'error': "User not found"}), 404
 
     try:
-        user.deposit(amount)
+        await User.deposit(amount)
         db.session.commit()
-        return jsonify({'message': "Deposit Successful", "balance": user.balance}), 200
+        return jsonify({'message': "Deposit Successful", "balance": user.wallet_balance}), 200
     except ValueError as e:
         return jsonify({'Error': str(e)}), 400
 
 
+@activity.defn
 @app.route('/withdraw/<int:user_id>', methods=['POST'])
-def withdrawFunds(user_id):
+async def withdraw_funds(user_id):
     """
     Withdraws from app wallet
     """
@@ -86,10 +94,10 @@ def withdrawFunds(user_id):
     #
     # user.balance -= data['amount']
     try:
-        user.withdraw(amount)
+        await WithdrawWorkflow.withdraw_funds(amount)
         db.session.commit()
         db.session.close()
-        return jsonify({'message': "Withdrawal successful", 'balance': user.balance}), 200
+        return jsonify({'message': "Withdrawal successful", 'balance': user.wallet_balance}), 200
     except ValueError as e:
         return jsonify({'Error': str(e)}), 400
 
